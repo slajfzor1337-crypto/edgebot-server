@@ -4,6 +4,13 @@ const cors = require("cors");
 const app = express();
 const PORT = process.env.PORT || 3001;
 const API_KEY = process.env.ODDS_API_KEY;
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID || "";
+
+let stripe;
+if (STRIPE_SECRET_KEY) {
+  stripe = require("stripe")(STRIPE_SECRET_KEY);
+}
 
 app.use(cors());
 app.use(express.json());
@@ -269,6 +276,54 @@ app.get("/api/sports", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── STRIPE ROUTES ────────────────────────────────────────────────────────────
+
+// Create checkout session for Premium subscription
+app.post("/api/create-checkout", async (req, res) => {
+  if (!stripe) return res.status(500).json({ error: "Stripe not configured." });
+  const { successUrl, cancelUrl } = req.body;
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      payment_method_types: ["card"],
+      line_items: [{
+        price_data: {
+          currency: "sek",
+          product_data: {
+            name: "Insikten Premium",
+            description: "Obegränsad AI-analys, predictions, acca-byggare och mer.",
+          },
+          unit_amount: 9900,
+          recurring: { interval: "month" },
+        },
+        quantity: 1,
+      }],
+      success_url: successUrl || "http://localhost:5173/?premium=true",
+      cancel_url: cancelUrl || "http://localhost:5173/?premium=false",
+      locale: "sv",
+    });
+    res.json({ url: session.url, sessionId: session.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Verify a checkout session (called after redirect back)
+app.get("/api/verify-session", async (req, res) => {
+  if (!stripe) return res.status(500).json({ error: "Stripe not configured." });
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).json({ error: "No session ID" });
+  try {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const isPremium = session.payment_status === "paid" || session.status === "complete";
+    res.json({ isPremium, status: session.status, email: session.customer_details?.email });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`EdgeBot server running on port ${PORT}`);
